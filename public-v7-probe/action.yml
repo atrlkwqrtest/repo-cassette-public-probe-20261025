@@ -1,0 +1,4 @@
+name: Public v7 probe
+runs:
+  using: node24
+  main: index.mjs
