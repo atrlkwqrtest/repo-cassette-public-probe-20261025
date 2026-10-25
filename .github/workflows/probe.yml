@@ -1,0 +1,37 @@
+name: Public v7 artifact probe
+on: workflow_dispatch
+permissions:
+  actions: write
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm install --ignore-scripts @actions/artifact@6.3.1 @azure/storage-blob@12.31.0
+      - name: Upload and inspect v7 artifact
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node --input-type=module <<'JS'
+          import {createHash} from 'node:crypto';
+          import {BlobClient} from '@azure/storage-blob';
+          import {internalArtifactTwirpClient} from './node_modules/@actions/artifact/lib/internal/shared/artifact-twirp-client.js';
+          import {getBackendIdsFromToken} from './node_modules/@actions/artifact/lib/internal/shared/util.js';
+          import {StringValue} from './node_modules/@actions/artifact/lib/generated/index.js';
+          const ids=getBackendIdsFromToken(), client=internalArtifactTwirpClient({maxAttempts:1});
+          const name='public-v7-'+process.env.GITHUB_RUN_ID, body=Buffer.from('{"probe":"public-v7"}');
+          const c=await client.CreateArtifact({workflowRunBackendId:ids.workflowRunBackendId,workflowJobRunBackendId:ids.workflowJobRunBackendId,name,version:7,mimeType:StringValue.create({value:'application/json'})});
+          await new BlobClient(c.signedUploadUrl).getBlockBlobClient().uploadData(body,{blobHTTPHeaders:{blobContentType:'\u0085application/json'}});
+          const f=await client.FinalizeArtifact({workflowRunBackendId:ids.workflowRunBackendId,workflowJobRunBackendId:ids.workflowJobRunBackendId,name,size:String(body.length),hash:StringValue.create({value:'sha256:'+createHash('sha256').update(body).digest('hex')})});
+          const id=String(f.artifactId), api='https://api.github.com/repos/'+process.env.GITHUB_REPOSITORY+'/actions/artifacts/'+id+'/zip';
+          const auth=await fetch(api,{redirect:'manual',headers:{authorization:'Bearer '+process.env.GITHUB_TOKEN,accept:'application/vnd.github.v3+json','user-agent':'public-v7-probe'}});
+          const anon=await fetch(api,{redirect:'manual',headers:{accept:'application/vnd.github.v3+json','user-agent':'public-v7-probe'}});
+          const loc=auth.headers.get('location'), u=loc?new URL(loc):null;
+          const raw=loc?await fetch(loc):null;
+          console.log('PUBLIC_V7_PROBE '+JSON.stringify({id,name,authStatus:auth.status,anonStatus:anon.status,authRsct:u?.searchParams.get('rsct'),anonRsct:anon.headers.get('location')?new URL(anon.headers.get('location')).searchParams.get('rsct'):null,rawStatus:raw?.status,rawContentType:raw?.headers.get('content-type'),matches:raw?Buffer.from(await raw.arrayBuffer()).equals(body):false}));
+          JS
